@@ -4,13 +4,21 @@ import random
 import time
 import json
 import os
+from dotenv import load_dotenv
 
-# 🔐 CONFIG (COLOCA SEUS DADOS AQUI)
-TOKEN = "8225102414:AAEoWT4xfa56mKXVHeOUgQurq4Pjq7FjtZo" 
-CHAT_ID = "7287966965" 
+# Carregar variáveis de ambiente do arquivo .env
+load_dotenv()
+
+# 🔐 CONFIG (USE VARIÁVEIS DE AMBIENTE)
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+if not TOKEN or not CHAT_ID:
+    raise ValueError("❌ Erro: Configure TELEGRAM_TOKEN e TELEGRAM_CHAT_ID no arquivo .env")
 
 ARQUIVO_ESTADO = "estado.json"
 
+# Lista de produtos para monitorar
 produtos = [
     {
         "nome": "RTX 5060 Ti",
@@ -65,43 +73,70 @@ headers_list = [
 ]
 
 def carregar_estado():
+    """Carrega o estado anterior de monitoramento"""
     if os.path.exists(ARQUIVO_ESTADO):
-        with open(ARQUIVO_ESTADO, "r") as f:
-            return json.load(f)
+        try:
+            with open(ARQUIVO_ESTADO, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"⚠️ Erro ao carregar estado: {e}")
+            return {}
     return {}
 
 def salvar_estado(estado):
-    with open(ARQUIVO_ESTADO, "w") as f:
-        json.dump(estado, f)
+    """Salva o estado de monitoramento"""
+    try:
+        with open(ARQUIVO_ESTADO, "w") as f:
+            json.dump(estado, f, indent=2)
+    except Exception as e:
+        print(f"⚠️ Erro ao salvar estado: {e}")
 
 def enviar_telegram(msg):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    data = {"chat_id": CHAT_ID, "text": msg}
-    requests.post(url, data=data)
+    """Envia mensagem para o Telegram"""
+    try:
+        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+        data = {"chat_id": CHAT_ID, "text": msg}
+        response = requests.post(url, data=data, timeout=10)
+        if response.status_code != 200:
+            print(f"⚠️ Erro ao enviar Telegram: {response.text}")
+    except Exception as e:
+        print(f"❌ Erro ao enviar Telegram: {e}")
 
 def pegar_preco_ml(soup):
+    """Extrai preço do Mercado Livre"""
     try:
         preco = soup.find("span", {"class": "andes-money-amount__fraction"})
-        return float(preco.text.replace(".", "").replace(",", "."))
-    except:
-        return None
+        if preco:
+            return float(preco.text.replace(".", "").replace(",", "."))
+    except Exception as e:
+        print(f"Erro ao parsear Mercado Livre: {e}")
+    return None
 
 def pegar_preco_generico(soup):
+    """Extrai preço de sites genéricos"""
     try:
         preco = soup.find("span")
-        texto = preco.text.replace("R$", "").replace(".", "").replace(",", ".")
-        return float(texto)
-    except:
-        return None
+        if preco:
+            texto = preco.text.replace("R$", "").replace(".", "").replace(",", ".").strip()
+            return float(texto)
+    except Exception as e:
+        print(f"Erro ao parsear preço: {e}")
+    return None
 
 def verificar():
+    """Verifica preços de todos os produtos"""
     estado = carregar_estado()
     agora = time.time()
     headers = {"User-Agent": random.choice(headers_list)}
 
+    print(f"\n🔍 Verificando preços em {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 50)
+
     for p in produtos:
         try:
-            r = requests.get(p["url"], headers=headers)
+            print(f"📦 Checando: {p['nome']}...", end=" ")
+            
+            r = requests.get(p["url"], headers=headers, timeout=10)
             soup = BeautifulSoup(r.text, "html.parser")
 
             if "mercadolivre" in p["url"]:
@@ -110,23 +145,35 @@ def verificar():
                 preco = pegar_preco_generico(soup)
 
             if preco:
-                print(f"{p['nome']} = R$ {preco}")
+                print(f"R$ {preco:.2f}")
 
                 ultima = estado.get(p["nome"], 0)
                 passou_12h = (agora - ultima) > 43200
 
                 if preco <= p["preco_desejado"]:
-                    enviar_telegram(f"🔥 PROMOÇÃO!\n{p['nome']}\nR$ {preco}\n{p['url']}")
+                    msg = f"🔥 PROMOÇÃO ENCONTRADA!\n\n{p['nome']}\n💰 R$ {preco:.2f}\n🎯 Preço desejado: R$ {p['preco_desejado']}\n\n🔗 {p['url']}"
+                    enviar_telegram(msg)
                     estado[p["nome"]] = agora
+                    print(f"   ✅ Alerta enviado!")
 
                 elif passou_12h:
-                    enviar_telegram(f"ℹ️ Atualização:\n{p['nome']}\nR$ {preco}")
+                    msg = f"ℹ️ ATUALIZAÇÃO DE PREÇO\n\n{p['nome']}\n💰 R$ {preco:.2f}\n🎯 Preço desejado: R$ {p['preco_desejado']}\n\n🔗 {p['url']}"
+                    enviar_telegram(msg)
                     estado[p["nome"]] = agora
+            else:
+                print("❌ Não conseguiu extrair preço")
 
+        except requests.exceptions.Timeout:
+            print(f"⏱️ Timeout ao acessar {p['nome']}")
         except Exception as e:
-            print(f"Erro em {p['nome']}: {e}")
+            print(f"❌ Erro em {p['nome']}: {e}")
 
     salvar_estado(estado)
+    print("=" * 50)
+    print("✅ Verificação concluída!\n")
 
 if __name__ == "__main__":
-    verificar()
+    try:
+        verificar()
+    except Exception as e:
+        print(f"❌ Erro fatal: {e}")
